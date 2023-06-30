@@ -1,0 +1,11 @@
+plastic
+not_plastic
+PP
+TPE
+PMMA
+PC
+PET
+ASA
+HDPE
+ABS
+LDPE
