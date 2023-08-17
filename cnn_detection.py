@@ -133,12 +133,12 @@ class tool():
         return img
 
 class dataset(Dataset):
-    def __init__(self, train_paths, is_test:bool, transform):
+    def __init__(self, train_paths, is_scale:bool, transform):
         self.train_paths_ = train_paths
         self.t = tool()
-        self._rescale = 4
-        if (is_test):
-            self._rescale = 1
+        self._rescale = 1
+        if (is_scale):
+            self._rescale = rescale
         self.transform = transform
 
     def __len__(self) -> int:
@@ -156,41 +156,45 @@ class dataset(Dataset):
         mask = self._get_labels(mask, num_class)
         hsi = self.transform(hsi)
         mask = self.transform(mask)
-        return torch.tensor(hsi).to(torch.float), torch.tensor(mask).to(torch.float)
+        return torch.tensor(hsi).to(torch.float), torch.tensor(mask).to(torch.long)
 
     def _get_labels(self, mask, num_class):
-        labels = np.zeros([mask.shape[0], mask.shape[1], num_class])
+        # labels = np.zeros([mask.shape[0], mask.shape[1], num_class])
+        labels = np.zeros([mask.shape[0], mask.shape[1]])
         for i in range(labels.shape[0]):
             for j in range(labels.shape[1]):
                 if mask[i,j]!=0:
-                    labels[i,j,1] = 1
+                    labels[i,j] = 1
                 else:
-                    labels[i,j,0] = 1
+                    labels[i,j] = 0
         return labels
     
-class cnn(nn.Module):
+class cnn_hsi(nn.Module):
     def __init__(self, classes) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(33, 64, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.conv4 = nn.Conv2d(256, classes, kernel_size=1)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv4 = nn.ConvTranspose2d(64, classes, kernel_size=2, stride = 2)  
+        self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
     def forward(self, input):
         input = torch.relu(self.conv1(input))
         input = torch.relu(self.conv2(input))
+        input = self.maxpool(input)
+        input = torch.relu(self.conv3(input))
         input = torch.relu(self.conv3(input))
         input = self.conv4(input)
         return input
 
 
 def train():
-    num_epoch = 50
+    num_epoch = 30
     #cnn_model = cnn(len(unique_labels)) #!!!
-    cnn_model = cnn(2)
-    optimizer = optim.Adam(cnn_model.parameters(), lr=0.001)
+    cnn_model = cnn_hsi(2)
+    optimizer = optim.Adam(cnn_model.parameters(), lr=0.007)
     criterion = nn.CrossEntropyLoss()
     # datasets
-    train_dataset = dataset(training_mask_paths, False, transform)
+    train_dataset = dataset(training_mask_paths, True, transform)
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
     softmax = nn.Softmax(dim=1)
     for epoch in range(num_epoch):
@@ -202,19 +206,18 @@ def train():
             num_class = output.shape[1]
             output = softmax(output)
             loss = criterion(output.permute(0,2,3,1).contiguous().view(-1,num_class), 
-                             mask.permute(0,2,3,1).contiguous().view(-1,num_class))
+                             mask.permute(0,2,3,1).contiguous().view(-1))
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
         train_loss /= len(train_loader)
         print("epoch:(%d/%d) ---"%(epoch+1,num_epoch),"train_loss:",train_loss)
+        # print("epoch:(%d/%d) ---"%(epoch+1,num_epoch),"train_loss:",train_loss\
+        #       ,"learning rate:",optimizer.param_groups[0]['lr'])
     return cnn_model
 
-def test(model_path:str):
-    cnn_model = torch.load(model_path)
-    print(">load model finished.")
-
-    test_dataset = dataset([training_mask_paths[0]], True, transform=transform_test)
+def test_one_image(cnn_model, image_paths:list):
+    test_dataset = dataset(image_paths, True, transform=transform_test)
     test_loader = DataLoader(test_dataset,batch_size=1)
     cnn_model.eval()
     all_predictions = []
@@ -235,16 +238,55 @@ def test(model_path:str):
             # else:
             #     result[i][j] = 0
             result[i][j] = colors[np.argmax(values)]
-    plt.figure(2)
-    plt.imshow(result, 'gray')
-    plt.show()
+    return result
 
-    # result = all_predictions[0]
-    # softmax = nn.Softmax(dim=0)
-    # prob = softmax(result[:, 0,0])
-    # print(prob>0.99)
+def test(cnn_model, output_path):
+    t = tool()
+    plt.figure(1)
+    n_row = 3
+    n_col = len(training_mask_paths) + len(test_mask_paths)
+    # first row, true mask img
+    for i in range(n_col):
+        if i>=len(training_mask_paths):
+            test_i = i - len(training_mask_paths)
+            _, rgb_path = t.find_pairs(test_mask_paths[test_i])
+            rgb_img = t.load_rgb(rgb_path,rescale)
+        else:
+            _, rgb_path = t.find_pairs(training_mask_paths[i])
+            rgb_img = t.load_rgb(rgb_path,rescale)
+        plt.subplot(n_row,n_col,0*n_col+1+i)
+        plt.imshow(rgb_img/255)
+        plt.axis('off')
+    # second row, true mask img
+    for i in range(n_col):
+        if i>=len(training_mask_paths):
+            test_i = i - len(training_mask_paths)
+            mask_img = t.load_mask(test_mask_paths[test_i],rescale)
+        else:
+            mask_img = t.load_mask(training_mask_paths[i],rescale)
+        plt.subplot(n_row,n_col,1*n_col+1+i)
+        plt.imshow(mask_img,'gray')
+        plt.axis('off')
+    # third row, model results
+    for i in range(n_col):
+        if i>=len(training_mask_paths):
+            test_i = i - len(training_mask_paths)
+            result = test_one_image(cnn_model, [test_mask_paths[test_i]])
+        else:
+            result = test_one_image(cnn_model, [training_mask_paths[i]])
+        plt.subplot(n_row,n_col,2*n_col+1+i)
+        plt.imshow(result,'gray')
+        plt.axis('off')
+    plt.subplots_adjust(hspace=0.05)
+    plt.savefig(output_path,dpi=300)    
+    plt.show()
     return
 
-# cnn_model = train()
-# torch.save(cnn_model,"./cnn_model1.pth")
-test("./cnn_model1.pth")
+cnn_model = train()
+torch.save(cnn_model,"../cnn_hsi_model1.pth")
+
+model_path = "../cnn_models/cnn_hsi_model1.pth"
+cnn_model = torch.load(model_path)
+print(">load model finished.")
+test(cnn_model, "../imgs/1.png")
+
