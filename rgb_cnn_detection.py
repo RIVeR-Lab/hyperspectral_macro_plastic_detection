@@ -146,17 +146,17 @@ class dataset(Dataset):
     
     def __getitem__(self, index):
         # get train image and mask
-        hsi_path, _ = self.t.find_pairs(self.train_paths_[index])
+        _, rgb_path = self.t.find_pairs(self.train_paths_[index])
         mask_img = self.t.load_mask(self.train_paths_[index], self._rescale)
-        hsi_img = self.t.load_hsi(hsi_path, self._rescale)
-        x = min(mask_img.shape[0], hsi_img.shape[0])
-        y = min(mask_img.shape[1], hsi_img.shape[1])
-        hsi = hsi_img[0:x, 0:y]
+        rgb_img = self.t.load_rgb(rgb_path, self._rescale)
+        x = min(mask_img.shape[0], rgb_img.shape[0])
+        y = min(mask_img.shape[1], rgb_img.shape[1])
+        rgb = rgb_img[0:x, 0:y]
         mask = mask_img[0:x, 0:y]
         mask = self._get_labels(mask, num_class)
-        hsi = self.transform(hsi)
+        rgb = self.transform(rgb)
         mask = self.transform(mask)
-        return torch.tensor(hsi).to(torch.float), torch.tensor(mask).to(torch.long)
+        return torch.tensor(rgb).to(torch.float), torch.tensor(mask).to(torch.long)
 
     def _get_labels(self, mask, num_class):
         # labels = np.zeros([mask.shape[0], mask.shape[1], num_class])
@@ -169,10 +169,10 @@ class dataset(Dataset):
                     labels[i,j] = 1
         return labels
     
-class cnn_hsi(nn.Module):
+class cnn_rgb(nn.Module):
     def __init__(self, classes) -> None:
         super().__init__()
-        self.conv1 = nn.Conv2d(33, 64, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv4 = nn.ConvTranspose2d(64, classes, kernel_size=2, stride = 2)  
@@ -188,11 +188,12 @@ class cnn_hsi(nn.Module):
 
 
 def train():
-    num_epoch = 60
+    num_epoch = 50
     #cnn_model = cnn(len(unique_labels)) #!!!
-    cnn_model = cnn_hsi(2)
-    optimizer = optim.Adam(cnn_model.parameters(), lr=0.005)
+    cnn_model = cnn_rgb(2)
+    optimizer = optim.Adam(cnn_model.parameters(), lr=0.1)
     criterion = nn.CrossEntropyLoss()
+    step_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     # datasets
     train_dataset = dataset(training_mask_paths, True, transform)
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
@@ -200,15 +201,16 @@ def train():
     for epoch in range(num_epoch):
         cnn_model.train()
         train_loss = 0
-        for hsi, mask in train_loader:
+        for rgb, mask in train_loader:
             optimizer.zero_grad()
-            output = cnn_model(hsi)
+            output = cnn_model(rgb)
             num_class = output.shape[1]
             output = softmax(output)
             loss = criterion(output.permute(0,2,3,1).contiguous().view(-1,num_class), 
                              mask.permute(0,2,3,1).contiguous().view(-1))
             loss.backward()
             optimizer.step()
+            step_scheduler.step()
             train_loss += loss.item()
         train_loss /= len(train_loader)
         print("epoch:(%d/%d) ---"%(epoch+1,num_epoch),"train_loss:",train_loss)
@@ -283,10 +285,10 @@ def test(cnn_model, output_path):
     return
 
 cnn_model = train()
-torch.save(cnn_model,"../cnn_models/cnn_hsi_model2.pth")
+torch.save(cnn_model,"../cnn_models/cnn_rgb_model1.pth")
 
-model_path = "../cnn_models/cnn_hsi_model2.pth"
+model_path = "../cnn_models/cnn_rgb_model1.pth"
 cnn_model = torch.load(model_path)
 print(">load model finished.")
-test(cnn_model, "../imgs/2.png")
+test(cnn_model, "../imgs/rgb_1.png")
 
